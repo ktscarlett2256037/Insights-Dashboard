@@ -1,8 +1,9 @@
-streamlit
-yfinance
-pandas
+streamlit>=1.30.0
+yfinance>=0.2.40
+pandas>=2.0.0
 numpy
 plotly
 scipy
 statsmodels
 arch
+requests
