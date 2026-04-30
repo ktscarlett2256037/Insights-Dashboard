@@ -8,20 +8,16 @@ from plotly.subplots import make_subplots
 # --- 1. CONFIG & MAPPING ---
 st.set_page_config(page_title="Quantum Terminal", layout="wide")
 
-# Mapping the user-friendly dropdown to YahooQuery codes
 TIME_MAP = {
     "Last Day": ("1d", "1m"),
     "Last Month": ("1mo", "1d"),
     "Last 6 Months": ("6mo", "1d"),
     "Last 1 Year": ("1y", "1d"),
-    "Last 2 Years": ("2y", "1d"),
-    "Last 3 Years": ("3y", "1d"),
-    "Last 4 Years": ("4y", "1d"),
     "Last 5 Years": ("5y", "1d")
 }
 
-# --- 2. DATA ENGINE ---
-@st.cache_data(ttl=600)
+# --- 2. THE STEALTH ENGINE ---
+@st.cache_data(ttl=300)
 def fetch_terminal_data(symbol, period, interval):
     try:
         t = Ticker(symbol, asynchronous=True)
@@ -29,13 +25,22 @@ def fetch_terminal_data(symbol, period, interval):
         if df.empty: return None
         if isinstance(df.index, pd.MultiIndex):
             df = df.reset_index()
-        df.rename(columns={'date': 'Date', 'open': 'Open', 'high': 'High', 
-                           'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+        
+        # Robust Column Renaming (Fixing the Volume Zero issue)
+        df.columns = [c.lower() for c in df.columns]
+        rename_map = {'date': 'Date', 'open': 'Open', 'high': 'High', 
+                      'low': 'Low', 'close': 'Close', 'volume': 'Volume'}
+        df.rename(columns=rename_map, inplace=True)
+        
+        # Filter out 0 volume if it's just a single glitchy data point at the end
+        if df['Volume'].iloc[-1] == 0 and len(df) > 1:
+            df.loc[df.index[-1], 'Volume'] = df['Volume'].iloc[-2]
+            
         return df
     except:
         return None
 
-# --- 3. QUANT LOGIC ---
+# --- 3. MATH ---
 def calculate_rsi(series, window=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
@@ -43,16 +48,10 @@ def calculate_rsi(series, window=14):
     rs = gain / loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
-def interpret_rsi(val):
-    if val >= 70: return "🔴 Overbought (Possible Reversal)", "inverse"
-    if val <= 30: return "🟢 Oversold (Possible Bounce)", "normal"
-    return "⚪ Neutral Zone", "off"
-
 # --- 4. UI SIDEBAR ---
 st.title("🚀 Quantum Intelligence Terminal")
 ticker = st.sidebar.text_input("Symbol", value="SBIN.NS").upper()
 horizon = st.sidebar.selectbox("Time Horizon", list(TIME_MAP.keys()), index=3)
-
 selected_period, selected_interval = TIME_MAP[horizon]
 
 # --- 5. EXECUTION ---
@@ -60,61 +59,69 @@ data = fetch_terminal_data(ticker, selected_period, selected_interval)
 
 if data is not None:
     data['RSI'] = calculate_rsi(data['Close'])
+    curr_rsi = data['RSI'].iloc[-1]
     
     # KPIs
-    curr_price = data['Close'].iloc[-1]
-    curr_rsi = data['RSI'].iloc[-1]
-    rsi_text, rsi_color = interpret_rsi(curr_rsi)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("LTP", f"₹{data['Close'].iloc[-1]:,.2f}")
+    c2.metric("Volume", f"{data['Volume'].iloc[-1]:,.0f}")
     
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("LTP", f"₹{curr_price:,.2f}")
-    col2.metric("Vol (Session)", f"{data['Volume'].iloc[-1]:,.0f}")
-    col3.metric("RSI Value", f"{curr_rsi:.2f}")
-    col4.write(f"**RSI Interpretation:** \n {rsi_text}")
+    rsi_state = "🔴 Overbought" if curr_rsi > 70 else "🟢 Oversold" if curr_rsi < 30 else "⚪ Neutral"
+    c3.metric("RSI Status", f"{curr_rsi:.1f}", rsi_state)
 
-    # --- 6. MULTI-STAGE CHARTING ---
-    # Rows: 1. Price/Candlestick, 2. RSI
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                       vertical_spacing=0.05, 
-                       row_heights=[0.7, 0.3],
-                       subplot_titles=(f"{ticker} Price Action", "Relative Strength Index (RSI)"))
+    # --- 6. CHART 1: PRICE & VOLUME AREA ---
+    st.subheader("Price Action & Liquidity Map")
+    
+    fig_price = go.Figure()
 
-    # A. Price Chart (Candlesticks)
-    fig.add_trace(go.Candlestick(
-        x=data['Date'], open=data['Open'], high=data['High'], 
-        low=data['Low'], close=data['Close'], name="Price"
-    ), row=1, col=1)
+    # Translucent Volume Area Map (Secondary Axis)
+    fig_price.add_trace(go.Scatter(
+        x=data['Date'], y=data['Volume'],
+        name="Volume Area",
+        fill='tozeroy',
+        fillcolor='rgba(127, 127, 127, 0.15)', # Translucent grey
+        line=dict(color='rgba(127, 127, 127, 0.2)'),
+        yaxis="y2"
+    ))
 
-    # B. Volume (Overlaid on Price)
-    fig.add_trace(go.Bar(
-        x=data['Date'], y=data['Volume'], name="Volume",
-        marker_color='rgba(100, 100, 100, 0.3)', yaxis="y2"
-    ), row=1, col=1)
+    # Candlestick Chart (Primary Axis)
+    fig_price.add_trace(go.Candlestick(
+        x=data['Date'], open=data['Open'], high=data['High'],
+        low=data['Low'], close=data['Close'], name="Candlestick"
+    ))
 
-    # C. RSI Chart
-    fig.add_trace(go.Scatter(
-        x=data['Date'], y=data['RSI'], name="RSI", 
-        line=dict(color='#AB63FA', width=2)
-    ), row=2, col=1)
-
-    # RSI Bounds
-    fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=2, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=2, col=1)
-    fig.add_hrect(y0=30, y1=70, fillcolor="gray", opacity=0.1, line_width=0, row=2, col=1)
-
-    # Layout Customization
-    fig.update_layout(
+    fig_price.update_layout(
         template="plotly_dark",
-        height=800,
+        height=500,
         xaxis_rangeslider_visible=False,
         showlegend=False,
-        yaxis=dict(title="Price (₹)"),
-        yaxis2=dict(title="Volume", overlaying="y", side="right", showgrid=False),
-        yaxis3=dict(title="RSI", range=[0, 100])
+        yaxis=dict(title="Price (₹)", side="left"),
+        yaxis2=dict(title="Volume", overlaying="y", side="right", showgrid=False, range=[0, data['Volume'].max() * 3]), # Pushes volume to background
+        margin=dict(l=10, r=10, t=10, b=10)
     )
+    st.plotly_chart(fig_price, use_container_width=True)
+
+    # --- 7. CHART 2: SEPARATE RSI ---
+    st.subheader("Momentum: RSI (14)")
     
-    st.plotly_chart(fig, use_container_width=True)
-    st.success(f"Dashboard updated for {horizon}")
+    fig_rsi = go.Figure()
+    fig_rsi.add_trace(go.Scatter(
+        x=data['Date'], y=data['RSI'],
+        line=dict(color='#AB63FA', width=2),
+        name="RSI"
+    ))
+
+    # Clean RSI Bands
+    fig_rsi.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.3)
+    fig_rsi.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.3)
+    
+    fig_rsi.update_layout(
+        template="plotly_dark",
+        height=250,
+        yaxis=dict(range=[0, 100], tickvals=[30, 70]),
+        margin=dict(l=10, r=10, t=10, b=10)
+    )
+    st.plotly_chart(fig_rsi, use_container_width=True)
 
 else:
-    st.error("📡 Data fetch failed. YahooQuery might be resetting. Please wait 10 seconds.")
+    st.error("📡 Market Data Stream currently unavailable.")
