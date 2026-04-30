@@ -5,16 +5,23 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-# --- 1. CONFIG ---
+# --- 1. CONFIG & STYLING ---
 st.set_page_config(page_title="Quantum Terminal", layout="wide")
 
-# --- 2. THE HARDENED ENGINE ---
+# Custom CSS to reduce padding and make it look "Dense"
+st.markdown("""
+    <style>
+    .block-container {padding-top: 1rem; padding-bottom: 0rem;}
+    .stMetric {background-color: #1e2130; padding: 10px; border-radius: 5px; border: 1px solid #333;}
+    [data-testid="stExpander"] {border: none !important; box-shadow: none !important;}
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 2. THE ENGINE ---
 @st.cache_data(ttl=300)
 def fetch_terminal_data(symbol, period=None, start=None, end=None, interval="1d"):
     try:
         t = Ticker(symbol, asynchronous=False)
-        
-        # To calculate 52W metrics reliably, we fetch a full year if the preset is short
         fetch_period = "1y" if period in ["1d", "1mo", "6mo"] else period
         
         if start and end:
@@ -31,28 +38,12 @@ def fetch_terminal_data(symbol, period=None, start=None, end=None, interval="1d"
         df.rename(columns={'date': 'Date', 'open': 'Open', 'high': 'High', 
                            'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
         
-        # Calculate 52W High/Low manually from the fetched data
-        # (This ensures the metrics are NEVER missing)
-        calc_52w_high = df['High'].max()
-        calc_52w_low = df['Low'].min()
-        
-        # If the user only wanted a shorter period, we crop the display data now
-        # but keep the 52W stats we just calculated.
-        display_df = df.copy()
-        if period == "1d": display_df = df.tail(390) # Approx 1 day of 1m data
-        elif period == "1mo": display_df = df.tail(22)
+        meta = {**t.summary_detail.get(symbol, {}), **t.key_stats.get(symbol, {})}
+        meta['calc_52h'] = df['High'].max()
+        meta['calc_52l'] = df['Low'].min()
             
-        summary = t.summary_detail.get(symbol, {})
-        stats = t.key_stats.get(symbol, {})
-        
-        meta = {
-            **summary, **stats, 
-            'calc_52h': calc_52w_high, 
-            'calc_52l': calc_52w_low
-        }
-            
-        return display_df, meta
-    except Exception as e:
+        return df, meta
+    except:
         return None, {}
 
 def calculate_rsi(series, window=14):
@@ -62,90 +53,103 @@ def calculate_rsi(series, window=14):
     rs = gain / loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
-# --- 3. UI CONTROLS ---
-st.sidebar.title("🛠️ Terminal Controls")
+# --- 3. UI SIDEBAR ---
+st.sidebar.title("🛠️ Controls")
 ticker = st.sidebar.text_input("Symbol", value="SBIN.NS").upper()
-mode = st.sidebar.radio("Range", ["Presets", "Custom Dates"])
-
-if mode == "Presets":
-    h = st.sidebar.selectbox("Horizon", ["Last Day", "Last Month", "1 Year", "5 Years"], index=2)
-    p_map = {"Last Day": "1d", "Last Month": "1mo", "1 Year": "1y", "5 Years": "5y"}
-    selected_period = p_map[h]
-    selected_interval = "1m" if h == "Last Day" else "1d"
-    start_date, end_date = None, None
-else:
-    col_s, col_e = st.sidebar.columns(2)
-    start_date = col_s.date_input("Start", datetime.now() - timedelta(days=365))
-    end_date = col_e.date_input("End", datetime.now())
-    selected_period, selected_interval = None, "1d"
-    h = "Custom"
+h_select = st.sidebar.selectbox("Horizon", ["Last Day", "Last Month", "1 Year", "5 Years"], index=2)
+p_map = {"Last Day": "1d", "Last Month": "1mo", "1 Year": "1y", "5 Years": "5y"}
+selected_period = p_map[h_select]
+selected_interval = "1m" if h_select == "Last Day" else "1d"
 
 # --- 4. EXECUTION ---
-data, meta = fetch_terminal_data(ticker, selected_period, start_date, end_date, selected_interval)
+data, meta = fetch_terminal_data(ticker, selected_period, None, None, selected_interval)
 
 if data is not None:
     data['RSI'] = calculate_rsi(data['Close'])
-    
-    # KPI SECTION
-    m1, m2, m3, m4 = st.columns(4)
     curr = data['Close'].iloc[-1]
-    m1.metric("LTP", f"₹{curr:,.2f}")
-    # Using calculated metrics as fallback
-    m2.metric("52W High", f"₹{meta.get('calc_52h', 0):,.2f}")
-    m3.metric("52W Low", f"₹{meta.get('calc_52l', 0):,.2f}")
-    m4.metric("Vol (K)", f"{data['Volume'].iloc[-1]/1000:,.1f}K")
-
-    # --- 5. MAIN PRICE CHART ---
-    st.subheader(f"Price Action & Liquidity Map: {ticker}")
-    fig = go.Figure()
-
-    # Enhanced Volume Area
-    fig.add_trace(go.Scatter(
-        x=data['Date'], y=data['Volume'], fill='tozeroy',
-        fillcolor='rgba(0, 204, 255, 0.2)', line=dict(color='rgba(0, 204, 255, 0.4)', width=1),
-        yaxis="y2", name="Volume"
-    ))
-
-    if h == "Last Day":
-        fig.add_trace(go.Scatter(x=data['Date'], y=data['Close'], line=dict(color='#00ffcc', width=2.5), name="Price"))
-    else:
-        fig.add_trace(go.Candlestick(x=data['Date'], open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name="Price"))
-
-    fig.update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False,
-                      yaxis=dict(title="Price (₹)", side="left", gridcolor="#333"),
-                      yaxis2=dict(overlaying="y", side="right", showgrid=False, range=[0, data['Volume'].max() * 4]))
-    st.plotly_chart(fig, use_container_width=True)
-
-    # --- 6. PRO RSI CHART ---
-    st.subheader("Momentum: RSI (14)")
-    fig_rsi = go.Figure()
+    prev = data['Close'].iloc[-2]
+    change = ((curr - prev) / prev) * 100
+    curr_rsi = data['RSI'].iloc[-1]
     
-    # Shaded Neutral Zone (30-70)
-    fig_rsi.add_hrect(y0=30, y1=70, fillcolor="gray", opacity=0.1, line_width=0)
+    # --- 5. THE EXECUTIVE RIBBON (Top View) ---
+    # This utilizes the top space for all key info
+    st.markdown(f"### 🚀 {ticker} | Quantum Executive Summary")
     
-    fig_rsi.add_trace(go.Scatter(
-        x=data['Date'], y=data['RSI'], 
-        line=dict(color='#AB63FA', width=2),
-        name="RSI"
-    ))
+    # Row 1: Market Pulse
+    r1_col1, r1_col2, r1_col3, r1_col4, r1_col5 = st.columns(5)
     
-    # Threshold Lines
-    fig_rsi.add_hline(y=70, line_dash="dash", line_color="red", annotation_text="Overbought")
-    fig_rsi.add_hline(y=30, line_dash="dash", line_color="green", annotation_text="Oversold")
+    r1_col1.metric("LTP", f"₹{curr:,.2f}", f"{change:.2f}%")
     
-    fig_rsi.update_layout(
-        template="plotly_dark", 
-        height=350, # INCREASED HEIGHT
-        yaxis=dict(range=[0, 100], title="RSI Value", gridcolor="#333"),
-        margin=dict(l=10, r=10, t=10, b=10)
-    )
-    st.plotly_chart(fig_rsi, use_container_width=True)
+    # 52W Stats
+    r1_col2.metric("52W High", f"₹{meta.get('calc_52h', 0):,.2f}")
+    r1_col3.metric("52W Low", f"₹{meta.get('calc_52l', 0):,.2f}")
+    
+    # RSI One-Shot
+    rsi_signal = "OVERBOUGHT" if curr_rsi > 70 else "OVERSOLD" if curr_rsi < 30 else "NEUTRAL"
+    r1_col4.metric("RSI (14)", f"{curr_rsi:.1f}", rsi_signal, delta_color="off")
+    
+    # Liquidity
+    vol_display = f"{data['Volume'].iloc[-1]/1000:,.1f}K" if data['Volume'].iloc[-1] < 1000000 else f"{data['Volume'].iloc[-1]/1000000:,.2f}M"
+    r1_col5.metric("Session Vol", vol_display)
 
-    with st.expander("📊 Fundamental Pulse", expanded=True):
-        f1, f2, f3, f4 = st.columns(4)
-        f1.write(f"**P/E Ratio:** {meta.get('trailingPE', 'N/A')}")
-        f2.write(f"**Market Cap:** ₹{meta.get('marketCap', 0)/1e7:,.2f} Cr")
-        f3.write(f"**P/B Ratio:** {meta.get('priceToBook', 'N/A')}")
-        f4.write(f"**Avg Volume:** {meta.get('averageVolume', 0)/1000:,.0f}K")
+    # Row 2: Fundamental Ratios (Now at the top!)
+    r2_col1, r2_col2, r2_col3, r2_col4, r2_col5 = st.columns(5)
+    
+    mkt_cap = meta.get('marketCap', 0) / 1e7
+    r2_col1.write(f"**Mkt Cap:** ₹{mkt_cap:,.0f} Cr")
+    r2_col2.write(f"**P/E Ratio:** {meta.get('trailingPE', 'N/A')}")
+    r2_col3.write(f"**P/B Ratio:** {meta.get('priceToBook', 'N/A')}")
+    r2_col4.write(f"**D/E Ratio:** {meta.get('debtToEquity', 'N/A')}")
+    r2_col5.write(f"**Dividend:** {meta.get('dividendYield', 0)*100:.2f}%")
+
+    st.divider()
+
+    # --- 6. THE CHARTING ENGINE ---
+    # Create a 2-column layout for main charts and secondary info
+    chart_main, chart_side = st.columns([4, 1])
+
+    with chart_main:
+        # MAIN PRICE CHART
+        fig = go.Figure()
+        # Cyber Blue Volume Map
+        fig.add_trace(go.Scatter(
+            x=data['Date'], y=data['Volume'], fill='tozeroy',
+            fillcolor='rgba(0, 204, 255, 0.2)', line=dict(color='rgba(0, 204, 255, 0)'),
+            yaxis="y2", name="Volume"
+        ))
+        # Candlestick or Line
+        if h_select == "Last Day":
+            fig.add_trace(go.Scatter(x=data['Date'], y=data['Close'], line=dict(color='#00ffcc', width=2), name="Price"))
+        else:
+            fig.add_trace(go.Candlestick(x=data['Date'], open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name="Price"))
+
+        fig.update_layout(template="plotly_dark", height=450, xaxis_rangeslider_visible=False,
+                          margin=dict(l=0, r=0, t=0, b=0),
+                          yaxis=dict(gridcolor="#333"),
+                          yaxis2=dict(overlaying="y", side="right", showgrid=False, range=[0, data['Volume'].max() * 4]))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # RSI CHART (One-Shot view)
+        fig_rsi = go.Figure()
+        fig_rsi.add_hrect(y0=30, y1=70, fillcolor="gray", opacity=0.1, line_width=0)
+        fig_rsi.add_trace(go.Scatter(x=data['Date'], y=data['RSI'], line=dict(color='#AB63FA', width=1.5)))
+        fig_rsi.update_layout(template="plotly_dark", height=180, yaxis=dict(range=[0, 100], tickvals=[30, 70]), margin=dict(l=0, r=0, t=0, b=0))
+        st.plotly_chart(fig_rsi, use_container_width=True)
+
+    with chart_side:
+        st.markdown("#### 🛡️ Risk Check")
+        returns = data['Close'].pct_change().dropna()
+        ann_vol = returns.std() * np.sqrt(252)
+        st.write(f"**Annual Vol:** \n {ann_vol:.2%}")
+        
+        max_dd = ((data['Close'] - data['Close'].cummax()) / data['Close'].cummax()).min()
+        st.write(f"**Max Drawdown:** \n {max_dd:.2%}")
+        
+        st.markdown("---")
+        st.markdown("#### 🧪 Signal")
+        if curr_rsi > 70: st.error("SELL SIGNAL")
+        elif curr_rsi < 30: st.success("BUY SIGNAL")
+        else: st.warning("WAIT")
+
 else:
-    st.error("📡 Data fetch failed. Check connection or symbol.")
+    st.error("📡 Terminal Offline. Check Ticker.")
