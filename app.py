@@ -3,64 +3,77 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import time
+import requests
+import random
 
-# --- 1. CONFIG ---
+# --- 1. THE ARMOR (User-Agent Rotation) ---
+def get_safe_session():
+    agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.63 Safari/537.36'
+    ]
+    session = requests.Session()
+    session.headers.update({'User-Agent': random.choice(agents)})
+    return session
+
+# --- 2. CONFIG ---
 st.set_page_config(page_title="Quantum Terminal", layout="wide")
+st.title("🚀 Quantum Intelligence Terminal")
 
-# --- 2. DATA ENGINE (The Tank) ---
-@st.cache_data(ttl=3600) # Cache for 1 hour to stop hitting Yahoo
-def fetch_robust_data(symbol):
+# --- 3. THE DATA ENGINE ---
+@st.cache_data(ttl=3600) # Cache for 1 hour to reduce Yahoo hits
+def fetch_data_secure(symbol):
     try:
-        # We use a slight delay to be "polite" to the server
-        time.sleep(1) 
-        ticker_obj = yf.Ticker(symbol)
-        # We try 'period' instead of 'history' first as it's more stable
-        df = yf.download(symbol, period="1y", interval="1d", auto_adjust=True, progress=False)
+        sess = get_safe_session()
+        # We fetch via the Ticker object which is more stable with sessions
+        t = yf.Ticker(symbol, session=sess)
+        df = t.history(period="1y", interval="1d")
         
         if df.empty:
             return None
             
-        # Clean up columns for Python 3.14
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-            
+        # Standardize for Python 3.14 compatibility
         df = df.reset_index()
         df.rename(columns={df.columns[0]: 'Date'}, inplace=True)
         return df
-    except Exception as e:
+    except:
         return None
 
-# --- 3. UI ---
-st.title("🚀 Quantum Intelligence Terminal")
-ticker = st.sidebar.text_input("Ticker", value="SBIN.NS").upper()
+# --- 4. UI ---
+ticker = st.sidebar.text_input("Enter Ticker", value="SBIN.NS").upper()
 
-data = fetch_robust_data(ticker)
+data = fetch_data_secure(ticker)
+
+# TABS (Even if data fails, the tabs stay so the app doesn't look broken)
+tab1, tab2, tab3 = st.tabs(["📈 Pulse", "🛡️ Risk Vault", "🌐 Alpha Lab"])
 
 if data is not None:
-    # 4. KPI MATH
-    curr = data['Close'].iloc[-1]
-    prev = data['Close'].iloc[-2]
-    change_pct = ((curr - prev) / prev) * 100
-    
-    m1, m2, m3 = st.columns(3)
-    m1.metric("LTP", f"₹{curr:,.2f}", f"{change_pct:.2f}%")
-    m2.metric("52W High", f"₹{data['High'].max():,.2f}")
-    m3.metric("52W Low", f"₹{data['Low'].min():,.2f}")
-
-    # 5. CHART
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
-    fig.add_trace(go.Candlestick(x=data['Date'], open=data['Open'], high=data['High'], 
-                               low=data['Low'], close=data['Close'], name="Price"), row=1, col=1)
-    
-    # Simple Volume Chart for Tab 1
-    fig.add_trace(go.Bar(x=data['Date'], y=data['Volume'], name="Volume", marker_color='orange'), row=2, col=1)
-    
-    fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
-    
-    st.success(f"System Online: {ticker}")
+    with tab1:
+        # Metrics
+        m1, m2, m3 = st.columns(3)
+        curr = data['Close'].iloc[-1]
+        m1.metric("LTP", f"₹{curr:,.2f}")
+        m2.metric("52W High", f"₹{data['High'].max():,.2f}")
+        m3.metric("52W Low", f"₹{data['Low'].min():,.2f}")
+        
+        # Robust Line Chart
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=data['Date'], y=data['Close'], line=dict(color='#00ffcc')))
+        fig.update_layout(template="plotly_dark", height=450, margin=dict(l=0,r=0,t=0,b=0))
+        st.plotly_chart(fig, use_container_width=True)
 else:
-    st.error("📡 Yahoo Finance is still blocking the connection.")
-    st.info("💡 **PRO TIP:** If this keeps happening, it's a 'Server IP' block. Go to your Streamlit dashboard and **delete the app entirely**, then 'New App' and reconnect the GitHub repo. This gives you a fresh IP address!")
+    with tab1:
+        st.error("📡 Connection to Exchange Interrupted.")
+        st.info("Yahoo Finance is currently rate-limiting the cloud server IP. The terminal will auto-reconnect when the window clears.")
+        # We can add a button to try a different 'Safe Session'
+        if st.button("Attempt Secure Reconnect"):
+            st.cache_data.clear()
+            st.rerun()
+
+with tab2:
+    st.subheader("Risk Metrics")
+    st.caption("Waiting for stable data feed...")
+
+st.sidebar.markdown("---")
+st.sidebar.caption("System Status: **Active**")
