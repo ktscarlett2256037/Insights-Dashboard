@@ -1,7 +1,6 @@
 streamlit
-yfinance
-yfinance-cache
+yahooquery
 pandas
 numpy
 plotly
-requests
+scipy
