@@ -1,10 +1,7 @@
-streamlit>=1.30.0
-yfinance>=0.2.40
-pandas>=2.0.0
+streamlit
+yfinance
+yfinance-cache
+pandas
 numpy
 plotly
-scipy
-statsmodels
-arch
 requests
-yfinance-cache
