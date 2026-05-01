@@ -5,59 +5,60 @@ import plotly.graph_objects as go
 import requests
 from datetime import datetime
 
-# --- 1. CONFIG & "QUANT" STYLING ---
+# --- 1. CONFIG & QUANT STYLING ---
 st.set_page_config(page_title="Quantum Terminal", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
     <style>
     .block-container {padding-top: 1rem; padding-bottom: 2rem;}
-    [data-testid="stMetricValue"] { font-size: 1.3rem !important; color: #00ffcc; }
-    [data-testid="stMetricLabel"] { font-size: 0.8rem !important; }
+    [data-testid="stMetricValue"] { font-size: 1.25rem !important; color: #00ffcc; }
+    [data-testid="stMetricLabel"] { font-size: 0.75rem !important; }
     .stMetric {
         background-color: #11141d; 
-        padding: 15px !important; 
+        padding: 12px !important; 
         border-radius: 4px; 
         border: 1px solid #2a2e39;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. THE ENGINE ---
+# --- 2. THE DYNAMIC ENGINE ---
 @st.cache_data(ttl=3600)
-def fetch_terminal_data(symbol, api_key, is_demo=False):
+def fetch_terminal_data(symbol, api_key, horizon, is_demo=False):
     if is_demo or not api_key:
-        # Use a data count that matches the 'Cool' version (approx 100 days)
-        dates = pd.date_range(end=datetime.now(), periods=100)
+        # Mocking 2000 points to support "MAX" and "5Y" views
+        dates = pd.date_range(end=datetime.now(), periods=2000)
         df = pd.DataFrame({
             'Date': dates,
-            'open': np.random.uniform(1000, 1100, 100),
-            'high': np.random.uniform(1100, 1150, 100),
-            'low': np.random.uniform(950, 1000, 100),
-            'close': np.random.uniform(1000, 1100, 100),
-            'volume': np.random.randint(100000, 1000000, 100)
+            'open': np.random.uniform(1000, 1100, 2000),
+            'high': np.random.uniform(1100, 1150, 2000),
+            'low': np.random.uniform(950, 1000, 2000),
+            'close': np.random.uniform(1000, 1100, 2000),
+            'volume': np.random.randint(100000, 1000000, 2000)
         })
-        meta = {'mcap': 54500, 'pe': 25.4, 'pb': 3.2, 'de': 0.5, 'beta': 1.1, 'h52': 1254.7, 'l52': 900.0}
-        return df, meta
+        return df, {'h52': 1254.7, 'l52': 900.0, 'mcap': 54500, 'pe': 25.4, 'pb': 3.2}
 
     try:
-        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=NSE:{symbol.replace(".NS", "")}&apikey={api_key}&outputsize=compact'
+        clean_ticker = symbol.replace('.NS', '')
+        # Determine if we need Intraday or Daily
+        if horizon == "Last Day":
+            url = f'https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&symbol=NSE:{clean_ticker}&interval=5min&apikey={api_key}'
+            key = 'Time Series (5min)'
+        else:
+            url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=NSE:{clean_ticker}&outputsize=full&apikey={api_key}'
+            key = 'Time Series (Daily)'
+            
         r = requests.get(url)
         data = r.json()
-        ts = data['Time Series (Daily)']
+        ts = data[key]
         df = pd.DataFrame.from_dict(ts, orient='index').astype(float)
         df = df.reset_index().rename(columns={'index': 'Date', '1. open': 'open', '2. high': 'high', '3. low': 'low', '4. close': 'close', '5. volume': 'volume'})
         df['Date'] = pd.to_datetime(df['Date'])
         df = df.sort_values('Date')
-        return df, {'h52': df['high'].max(), 'l52': df['low'].min(), 'mcap': 54500, 'pe': 22.1, 'pb': 2.8, 'de': 0.6, 'beta': 1.05}
+        
+        return df, {'h52': df['high'].tail(252).max(), 'l52': df['low'].tail(252).min(), 'mcap': 54500, 'pe': 22.1, 'pb': 2.8}
     except:
         return None, {}
-
-def calculate_rsi(series, window=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    rs = gain / loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
 
 # --- 3. TOP NAVIGATION ---
 st.title("🚀 Quantum Intelligence Terminal")
@@ -69,79 +70,74 @@ t1, t2, _ = st.columns([1.5, 2, 6.5])
 with t1:
     ticker = st.text_input("Ticker", value="SBIN.NS", label_visibility="collapsed").upper()
 with t2:
-    range_select = st.selectbox("View", ["Last Month", "Standard View (100D)"], index=1, label_visibility="collapsed")
+    horizon = st.selectbox("Horizon", ["Last Day", "Last Week", "Last Month", "6 Months", "1 Year", "5 Years", "MAX"], index=4, label_visibility="collapsed")
 
-# --- 4. EXECUTION ---
-full_data, meta = fetch_terminal_data(ticker, api_key, is_demo=demo_mode)
+# --- 4. DATA PROCESSING ---
+full_data, meta = fetch_terminal_data(ticker, api_key, horizon, is_demo=demo_mode)
 
 if full_data is not None:
-    data = full_data.tail(22) if range_select == "Last Month" else full_data
-    data['rsi'] = calculate_rsi(data['close'])
-    
-    # --- 5. TOP DATA RIBBON ---
+    # Range Slicing
+    range_map = {"Last Day": 78, "Last Week": 5, "Last Month": 22, "6 Months": 126, "1 Year": 252, "5 Years": 1260, "MAX": len(full_data)}
+    data = full_data.tail(range_map[horizon])
+    curr = data['close'].iloc[-1]
+
+    # --- 5. EXECUTIVE RIBBON ---
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("LTP", f"₹{data['close'].iloc[-1]:,.2f}")
+    m1.metric("LTP", f"₹{curr:,.2f}")
     m2.metric("52W High", f"₹{meta['h52']:,.2f}")
     m3.metric("52W Low", f"₹{meta['l52']:,.2f}")
-    
-    rsi_val = data['rsi'].iloc[-1]
-    status = "OVERBOUGHT" if rsi_val > 70 else "OVERSOLD" if rsi_val < 30 else "NEUTRAL"
-    m4.metric("RSI (14)", f"{rsi_val:.1f}", status, delta_color="off")
-    m5.metric("Mkt Cap", f"₹{meta['mcap']:,} Cr")
+    m4.metric("Mkt Cap", f"₹{meta['mcap']:,} Cr")
+    m5.metric("P/E Ratio", f"{meta['pe']}")
 
     st.divider()
 
-    # --- 6. THE RESTORED "COOL" CHART ---
+    # --- 6. THE "COMFORTABLE" CHART ---
     fig = go.Figure()
-    
-    # Cyber Blue Volume Area
-    fig.add_trace(go.Scatter(
-        x=data['Date'], y=data['volume'], fill='tozeroy', 
-        fillcolor='rgba(0, 204, 255, 0.15)', line=dict(width=0), 
-        yaxis="y2", name="Volume"
-    ))
-    
-    # Clean Candlesticks
+
+    # CANDLESTICKS
     fig.add_trace(go.Candlestick(
         x=data['Date'], open=data['open'], high=data['high'], 
         low=data['low'], close=data['close'], name="Price"
     ))
-    
-    # White Trendline (Close Path)
+
+    # TRENDLINE (CLOSE PATH)
     fig.add_trace(go.Scatter(
         x=data['Date'], y=data['close'], 
-        line=dict(color='rgba(255, 255, 255, 0.5)', width=1.5), 
-        name="Close Path"
+        line=dict(color='rgba(255, 255, 255, 0.4)', width=1.5), 
+        name="Close Path", hoverinfo='skip'
     ))
 
-    # Calculate Vertical Headroom
-    p_min, p_max = data['low'].min(), data['high'].max()
-    padding = (p_max - p_min) * 0.05
+    # BOTTOM-WEIGHTED VOLUME BARS
+    fig.add_trace(go.Bar(
+        x=data['Date'], y=data['volume'], 
+        marker_color='rgba(0, 204, 255, 0.3)', 
+        yaxis="y2", name="Volume", hoverinfo='skip'
+    ))
 
+    # Calculate "Comfortable" Vertical Scale (20% Headroom)
+    p_min, p_max = data['low'].min(), data['high'].max()
+    p_range = p_max - p_min
+    
     fig.update_layout(
-        template="plotly_dark", height=600, # Increased height for Bloomberg feel
+        template="plotly_dark", height=650, 
         xaxis_rangeslider_visible=False,
         margin=dict(l=0, r=0, t=30, b=0),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        
+        # PRIMARY Y-AXIS (Price with Padding)
         yaxis=dict(
-            gridcolor="#2a2e39", title="Price (₹)", 
-            range=[p_min - padding, p_max + padding] # THE VERTICAL FIX
+            gridcolor="#2a2e39", title="Price (₹)",
+            range=[p_min - (p_range * 0.2), p_max + (p_range * 0.2)] 
         ),
-        yaxis2=dict(overlaying="y", side="right", showgrid=False, range=[0, data['volume'].max()*5]),
-        xaxis=dict(nticks=10, gridcolor="#2a2e39") # THE HORIZONTAL FIX
+        
+        # SECONDARY Y-AXIS (Volume locked to bottom 25%)
+        yaxis2=dict(
+            overlaying="y", side="right", showgrid=False, 
+            range=[0, data['volume'].max() * 4] 
+        ),
+        xaxis=dict(gridcolor="#2a2e39", nticks=12)
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # RSI CHART
-    fig_rsi = go.Figure()
-    fig_rsi.add_hrect(y0=70, y1=100, fillcolor="red", opacity=0.1, line_width=0)
-    fig_rsi.add_hrect(y0=0, y1=30, fillcolor="green", opacity=0.1, line_width=0)
-    fig_rsi.add_trace(go.Scatter(x=data['Date'], y=data['rsi'], line=dict(color='#AB63FA', width=2)))
-    fig_rsi.update_layout(
-        template="plotly_dark", height=200, margin=dict(l=0, r=0, t=0, b=0),
-        yaxis=dict(range=[0, 100], tickvals=[30, 70], gridcolor="#2a2e39", title="RSI")
-    )
-    st.plotly_chart(fig_rsi, use_container_width=True)
-
 else:
-    st.error("Terminal Offline. Check connection settings.")
+    st.error("Terminal Connection Error.")
